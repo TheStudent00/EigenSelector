@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Eigenvector Selector</title>
+
+			
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            background-color: black;
+        }
+        #left-panel {
+            width: 200px;
+            background-color: #1a1a1a;
+            color: white;
+            padding: 10px;
+            border-right: 1px solid #333;
+            flex-shrink: 0;
+        }
+        #right-panel {
+            flex-grow: 1;
+            position: relative;
+            width: calc(100% - 200px);
+        }
+        .math-object {
+            cursor: pointer;
+            margin: 10px 0;
+            padding: 5px;
+            background-color: #333;
+            border-radius: 3px;
+            text-align: center;
+            color: white;
+        }
+        #instructions {
+            margin-top: 20px;
+            font-size: 0.9em;
+        }
+        #tutorial-video {
+            margin-top: 20px;
+            width: 100%;
+            display: none;
+        }
+        #matrix-display {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: 'Courier New', Courier, monospace;
+        }
+    </style>
+
+</head>
+<body>
+      <div id="tutorial-video" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 50%; background-color: #333; padding: 20px; border-radius: 8px; box-shadow: 0px 0px 15px rgba(0, 0, 0, 0.5); z-index: 1000; display: none; text-align: center;">
+        <iframe width="560" height="315" src="https://www.youtube-nocookie.com/embed/_rmd7PpEITU?si=fSsA0UVxC39VM6xw" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+        <div style="color: white; margin-top: 10px; text-align: left;">
+            <h3>Instructions:</h3>
+            <ol>
+                <li>Click "Generate Random Matrix" to create a new 3D matrix.</li>
+                <li>Adjust the camera to position yourself along the direction where the matrix vectors look smallest. This represents an approximation of the dominant eigenvector.</li>
+                <li>Click "Submit Dominant Eigenvector Guess" to see how accurate your guess is.</li>
+                <li>Your goal is to align the camera direction such that the matrix vectors project minimally. The accuracy will be displayed as a percentage.</li>
+            </ol>
+        </div>
+        <button id="close-tutorial" style="position: absolute; top: 10px; right: 10px; padding: 5px 10px; background-color: #444; border: 1px solid #666; color: white; font-size: 1em; cursor: pointer; border-radius: 3px;">&times;</button>
+    </div>
+    <div id="left-panel">
+        <div class="math-object" id="generate-matrix">Generate Random Matrix</div>
+        <div class="math-object" id="submit-guess">Submit Dominant Eigenvector Guess</div>
+          <div id="selection-accuracy-container" style="border: 1px solid #666; padding: 10px; margin-top: 20px; text-align: center; font-weight: bold;">
+          <div>Selection Accuracy:</div>
+          <div id="selection-accuracy" style="border: 1px solid #666; padding: 10px; margin-top: 20px; text-align: center; font-weight: bold;">
+            <p>...</p>  
+          </div>
+        </div>
+
+        <div class="math-object" id="tutorial-button" style="margin-bottom: auto;">Show Tutorial</div>
+
+    </div>
+    <div id="right-panel">
+        <div id="plotly-div" style="width: 100%; height: 100%;"></div>
+        <div id="matrix-display"></div>
+    </div>
+    </div>
+    </div>
+	
+	
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+	<script>
+        let generatedMatrix = null;
+		let generatedMatrix_t = null;
+        let firstEigenvector = null;
+        let firstEigenvalue = null;
+        let buffer = null;
+		let randomLambda = null;
+        let randomQ = null;
+        let randomQ_t = null;
+        let randomQ_inv = null;
+	    let randomOrthogonal = null;
+	    let randomOrthogonal_t = null;
+
+        // Function to generate a random orthogonal matrix by rotating the identity matrix
+        function generateRandomOrthogonal() {
+            // Generate random angles for rotation
+            const theta = Math.random() * 2 * Math.PI;
+            const phi = Math.random() * 2 * Math.PI;
+
+            // Construct a simple rotation matrix in 3D
+            let rotationMatrix = [
+                [Math.cos(theta), -Math.sin(theta) * Math.cos(phi), Math.sin(theta) * Math.sin(phi)],
+                [Math.sin(theta), Math.cos(theta) * Math.cos(phi), -Math.cos(theta) * Math.sin(phi)],
+                [0, Math.sin(phi), Math.cos(phi)]
+            ];
+
+            // Apply the rotation matrix to the identity matrix to obtain an orthogonal matrix
+            return rotationMatrix;
+        }
+
+        // Outer product computation (manual)
+        function outerProduct(vec1, vec2) {
+            const result = [];
+            for (let i = 0; i < vec1.length; i++) {
+                const row = [];
+                for (let j = 0; j < vec2.length; j++) {
+                    row.push(vec1[i] * vec2[j]);
+                }
+                result.push(row);
+            }
+            return result;
+        }
+		
+        // Utility functions for vector operations
+        function dotProduct(v1, v2) {
+            return v1.reduce((sum, val, i) => sum + v1[i] * v2[i], 0);
+        }
+
+        function scalarMult(vec, scalar) {
+            return vec.map(val => val * scalar);
+        }
+
+        function subtractVectors(v1, v2) {
+            return v1.map((val, i) => val - v2[i]);
+        }
+
+        function vectorNorm(vector){
+            const magnitude = Math.sqrt(vector.reduce((sum, val) => sum + val ** 2, 0));
+            return magnitude
+        }
+      
+		function normalizeVector(vector) {
+		    const magnitude = Math.sqrt(vector.reduce((sum, val) => sum + val ** 2, 0));
+		    return vector.map(val => val / magnitude);
+		}
+		
+        function generateNormal(mean=0.0, stdDev=1.0) {
+            let u1 = Math.random();
+            let u2 = Math.random();
+            let z0 = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+            return z0 * stdDev + mean;
+        }
+  
+        function addRandomSign(vector) {
+            return vector.map(val => {
+                // Generate a random number and use it to decide the sign
+                let sign = Math.random() < 0.5 ? -1 : 1;
+                return val * sign;
+            });
+        }
+
+      
+        // Function to generate a random matrix using eigenvalue decomposition
+		function generateRandomMatrix() {
+		    // Step 1: Define L and L_inv matrices
+		    let matrixL = [
+		        [1.0, 0.0, 0.0],
+		        [0.5, 1.0, 0.0],
+		        [0.25, 0.25, 1.0]
+		    ];
+		    let matrixL_inv = [
+		        [1.0, 0.0, 0.0],
+		        [-0.5, 1.0, 0.0],
+		        [-0.125, -0.25, 1.0]
+		    ];
+
+		    // Step 2: Generate random orthogonal matrix and its transpose
+		    randomOrthogonal = generateRandomOrthogonal();
+		    randomOrthogonal_t = numeric.transpose(randomOrthogonal);
+
+		    // Step 3: Generate random diagonal and its reciprocal
+            let randomValues = [generateNormal(100.0, 1.0), 
+                                generateNormal(100.0, 1.0), 
+                                generateNormal(100.0, 1.0)];
+
+            randomValues = normalizeVector(randomValues);
+            randomValues = addRandomSign(randomValues);
+
+          
+		    let randomDiagonal = [
+		        [randomValues[0], 0.0, 0.0],
+		        [0.0, randomValues[1], 0.0],
+		        [0.0, 0.0, randomValues[2]]
+		    ];
+		    let randomDiagonal_inv = [
+		        [1 / randomDiagonal[0][0], 0.0, 0.0],
+		        [0.0, 1 / randomDiagonal[1][1], 0.0],
+		        [0.0, 0.0, 1 / randomDiagonal[2][2]]
+		    ];
+
+		    // Step 4a: Construct Q and Q_inv
+		    randomQ = numeric.dot(numeric.dot(randomDiagonal, matrixL), randomOrthogonal);
+		    randomQ_inv = numeric.dot(numeric.dot(randomOrthogonal_t, matrixL_inv), randomDiagonal_inv);
+
+            // Step 4b: Reorder Q and Q_inv based on column lengths
+
+            // 1. Calculate column lengths of Q
+            let columnLengths = randomQ[0].map((_, colIndex) => {
+                return Math.sqrt(randomQ.reduce((sum, row) => sum + Math.pow(row[colIndex], 2), 0));
+            });
+            
+            // 2. Create an order mapping based on column lengths
+            let orderMapping = columnLengths.map((length, index) => ({ length, index }))
+                .sort((a, b) => b.length - a.length)
+                .map(item => item.index);
+            
+            // 3. Reorder columns of Q
+            randomQ = randomQ.map(row => orderMapping.map(index => row[index]));
+            randomQ_t = numeric.transpose(randomQ)
+            
+            // 4. Reorder rows of Q_inv based on the same order
+            randomQ_inv = orderMapping.map(index => randomQ_inv[index]);
+
+            // Step 4c: Normalize the first eigenvector and adjust Q and Q_inv accordingly
+
+            // 1. Calculate the norm of the first eigenvector (column of Q)
+            let firstEigenvectorNorm = vectorNorm(randomQ_t[0]);
+            
+            // 2. Normalize the first column of Q
+            randomQ = randomQ.map(row => row.map((val, colIndex) => colIndex === 0 ? val / firstEigenvectorNorm : val));
+            
+            // 3. Adjust Q_inv by multiplying the corresponding first row by the same norm
+            randomQ_inv = randomQ_inv.map((row, rowIndex) => row.map((val, colIndex) => rowIndex === 0 ? val * firstEigenvectorNorm : val));
+
+          
+
+		    // Step 5: Generate Lambda matrix (diagonal eigenvalues)
+		    let randomlambdas = [
+		        generateNormal(-2, 1.0),  // Mean -2, std dev 0.1
+		        generateNormal(0, 1.0),   // Mean 0, std dev 0.1
+		        generateNormal(2, 1.0)    // Mean 2, std dev 0.1
+		    ];
+		    randomlambdas = randomlambdas.map(value => 1 / (1 + Math.exp(-value)));
+		    randomlambdas.sort((a, b) => b - a);
+
+		    randomLambda = [
+		        [randomlambdas[0], 0.0, 0.0],
+		        [0.0, randomlambdas[1], 0.0],
+		        [0.0, 0.0, randomlambdas[2]]
+		    ];
+
+		    // Step 6: Construct the generated matrix using Q * Lambda * Q_inv
+		    generatedMatrix = numeric.dot(numeric.dot(randomQ, randomLambda), randomQ_inv);
+			
+            // Store the first eigenvector and its corresponding eigenvalue
+            firstEigenvector = randomQ_t[0];
+            firstEigenvalue = randomLambda[0][0];  // First eigenvalue
+			
+			generatedMatrix_t = numeric.transpose(generatedMatrix)
+			
+		    plotMatrix(generatedMatrix_t);
+		    displayMatrix();
+		}
+
+
+        // Function to display the generated matrix in LaTeX-like format
+        function displayMatrix() {
+            if (generatedMatrix) {
+                const matrixDisplay = document.getElementById('matrix-display');
+                
+                // Create LaTeX representation of the matrix A with an aligned layout similar to the full decomposition
+                let decompositionLatex = `
+                \\[
+                \\begin{array}{c@{\hspace{1cm}}c@{\hspace{1cm}}c@{\hspace{1cm}}c}
+                \\text{A} & & & \\\\
+                \\begin{bmatrix}
+                `;
+                
+                // Display matrix A
+                generatedMatrix.forEach((row, rowIndex) => {
+                    decompositionLatex += row.map((val, colIndex) => {
+                        // Highlight the first eigenvector element
+                        return colIndex === 0 ? `\\color{white}{${val.toFixed(2)}}` : val.toFixed(2);
+                    }).join(' & ');
+                    if (rowIndex < randomQ.length - 1) {
+                        decompositionLatex += ' \\\\ ';
+                    }
+                });
+                decompositionLatex += `
+                \\end{bmatrix} & & &
+                \\end{array}
+                \\]
+                `;
+        
+                matrixDisplay.innerHTML = decompositionLatex;
+                MathJax.typesetPromise([matrixDisplay]);
+            }
+        }
+
+        // Modify the plotMatrix function to update grid range based on largest eigenvalue
+        function plotMatrix(matrix) {
+            const matrixTraces = matrix.map((col, index) => ({
+                type: 'scatter3d',
+                mode: 'lines+markers',
+                x: [0, col[0]],
+                y: [0, col[1]],
+                z: [0, col[2]],
+                line: { width: 6, color: ['cyan', '#00FFFF', '#00CED1'][index % 3], opacity: 0.8 },
+                marker: { size: 4, color: ['cyan', '#00FFFF', '#00CED1'][index % 3], opacity: 0.8 },
+                name: `Matrix Vector ${index + 1}`
+            }));
+
+            // Calculate buffer based on eigenvalue
+            // buffer = Math.abs(firstEigenvalue) * 1.2;
+			let identity = numeric.identity(3);
+			let generatedMatrix_copy = numeric.dot(generatedMatrix, identity);
+			
+            let columnLengths = generatedMatrix_copy[0].map((_, colIndex) => {
+                return Math.sqrt(generatedMatrix_copy.reduce((sum, row) => sum + Math.pow(row[colIndex], 2), 0));
+            });
+            
+            // 2. Create an order mapping based on column lengths
+            let orderMapping = columnLengths.map((length, index) => ({ length, index }))
+                .sort((a, b) => b.length - a.length)
+                .map(item => item.index);
+				
+	        // 3. Reorder columns of Q
+	        generatedMatrix_copy = generatedMatrix_copy.map(row => orderMapping.map(index => row[index]));
+			largestVector = [generatedMatrix_copy[0][0], generatedMatrix_copy[1][0], generatedMatrix_copy[2][0]];
+			
+			buffer = dotProduct(largestVector, largestVector)
+			buffer = Math.sqrt(buffer) * 1.2;
+			// buffer = Math.abs(firstEigenvalue) * buffer * 1.2;
+
+            const layout = {
+                scene: {
+                    xaxis: { range: [-buffer, buffer], title: 'X' },
+                    yaxis: { range: [-buffer, buffer], title: 'Y' },
+                    zaxis: { range: [-buffer, buffer], title: 'Z' },
+                    aspectmode: 'cube',
+                    camera: {
+                        eye: { x: 1.0, y: 1.0, z: 1.0 }
+                    }
+                },
+                paper_bgcolor: 'black',
+                plot_bgcolor: 'black',
+                title: "Eigenvector Comparison",
+                font: {
+                    color: 'white'
+                }
+            };
+
+            Plotly.newPlot('plotly-div', matrixTraces, layout);
+        }
+
+        // Function to get the camera position as the guess vector
+        function getCameraPosition() {
+            const scene = document.getElementById('plotly-div')._fullLayout.scene._scene;
+            const cameraPosition = scene.getCamera().eye;  // This returns an object with x, y, z
+            return [cameraPosition.x, cameraPosition.y, cameraPosition.z];
+        }
+
+        // Function to calculate cosine similarity between two vectors
+        function calculateCosineSimilarity(v1, v2) {
+            const dotProd = dotProduct(v1, v2);
+            const normV1 = Math.sqrt(dotProduct(v1, v1));
+            const normV2 = Math.sqrt(dotProduct(v2, v2));
+            return dotProd / (normV1 * normV2);
+        }
+
+          // Function to handle the first eigenvector guess submission
+          function handleFirstEigenGuessSubmission() {
+              const guessVector = getCameraPosition();
+              const normalizedGuessVector = scalarMult(guessVector, 1 / Math.sqrt(dotProduct(guessVector, guessVector)));
+          
+              // Calculate cosine similarity between actual and guessed eigenvectors
+              const cosineSimilarity = Math.abs(calculateCosineSimilarity(firstEigenvector, normalizedGuessVector));
+              const selectionAccuracy = cosineSimilarity * 100;
+          
+              displaySelectionAccuracy(selectionAccuracy);
+              plotEigenvectorComparison(normalizedGuessVector);
+          
+              // Display eigen decomposition
+              displayEigenDecomposition();
+          }
+
+        // Function to display the accuracy results
+        function displaySelectionAccuracy(selectionAccuracy = null) {
+            const resultDiv = document.getElementById('selection-accuracy');
+            resultDiv.innerHTML = '';
+            if (selectionAccuracy !== null) {
+                resultDiv.innerHTML += `<p>${selectionAccuracy.toFixed(2)}%</p>`;
+            }
+        }
+
+        // Function to display the eigen decomposition of the matrix with highlights
+        function displayEigenDecomposition() {
+            if (generatedMatrix) {
+                const matrixDisplay = document.getElementById('matrix-display');
+                
+                // Create LaTeX representation of the decomposition with labels and highlights
+                let decompositionLatex = `
+                \\[
+                \\begin{array}{c@{\hspace{1cm}}c@{\hspace{1cm}}c@{\hspace{1cm}}c}
+                \\text{A} & = & \\text{Q} & \\text{Λ} & \\text{Q}^{-1} \\\\
+                \\begin{bmatrix}
+                `;
+                
+                // Display matrix A
+                generatedMatrix.forEach((row, rowIndex) => {
+                    decompositionLatex += row.map((val, colIndex) => {
+                        // Highlight the first eigenvector element
+                        return colIndex === 0 ? `\\color{white}{${val.toFixed(2)}}` : val.toFixed(2);
+                    }).join(' & ');
+                    if (rowIndex < randomQ.length - 1) {
+                        decompositionLatex += ' \\\\ ';
+                    }
+                });
+                decompositionLatex += `
+                \\end{bmatrix} & & \\begin{bmatrix}
+                `;
+                
+                // Display Q matrix with highlights
+                randomQ.forEach((row, rowIndex) => {
+                    decompositionLatex += row.map((val, colIndex) => {
+                        // Highlight the first eigenvector element
+                        return colIndex === 0 ? `\\color{green}{${val.toFixed(2)}}` : val.toFixed(2);
+                    }).join(' & ');
+                    if (rowIndex < randomQ.length - 1) {
+                        decompositionLatex += ' \\\\ ';
+                    }
+                });
+                decompositionLatex += `
+                \\end{bmatrix} & \\begin{bmatrix}
+                `;
+                
+                // Display Λ (Lambda) matrix with highlight on the first eigenvalue
+                randomLambda.forEach((row, rowIndex) => {
+                    row.forEach((val, colIndex) => {
+                        if (rowIndex === colIndex) {
+                            // Highlight only the first eigenvalue
+                            decompositionLatex += rowIndex === 0 ? `\\color{green}{${val.toFixed(2)}}` : val.toFixed(2);
+                        } else {
+                            decompositionLatex += val.toFixed(2);
+                        }
+                        if (colIndex < row.length - 1) {
+                            decompositionLatex += ' & ';
+                        }
+                    });
+                    if (rowIndex < randomLambda.length - 1) {
+                        decompositionLatex += ' \\\\ ';
+                    }
+                });
+
+                decompositionLatex += `
+                \\end{bmatrix} & \\begin{bmatrix}
+                `;
+                
+                // Display Q^T matrix with highlight on the first column
+                randomQ_inv.forEach((row, rowIndex) => {
+                    decompositionLatex += row.map((val, colIndex) => {
+                        // return rowIndex === 0 ? `\\color{black}{${val.toFixed(2)}}` : val.toFixed(2);
+                        return rowIndex === 0 ? `${val.toFixed(2)}` : val.toFixed(2);
+                    }).join(' & ');
+                    if (rowIndex < randomQ_inv.length - 1) {
+                        decompositionLatex += ' \\\\ ';
+                    }
+                });
+
+                decompositionLatex += `
+                \\end{bmatrix}
+                \\end{array}
+                \\]
+                `;
+        
+                matrixDisplay.innerHTML = decompositionLatex;
+                MathJax.typesetPromise([matrixDisplay]);
+            }
+        }
+
+        // function powerMethod(matrix, numIterations = 100) {
+        //     let b = Array(matrix.length).fill(1); // Starting vector with all elements equal to 1
+        //     for (let i = 0; i < numIterations; i++) {
+        //         b = numeric.dot(matrix, b);
+        //         const norm = Math.sqrt(dotProduct(b, b));
+        //         b = b.map(val => val / norm); // Normalize the vector
+        //     }
+        //     // Calculate eigenvalue as Rayleigh quotient
+        //     const eigenvalue = dotProduct(numeric.dot(matrix, b), b) / dotProduct(b, b);
+        //     return { eigenvalue, eigenvector: b };
+        // }
+
+        // Function to compute the actual dominant eigenvector using library functions
+        // function getDominantEigenvector(matrix) {
+        //     // Using the numeric.js library to calculate the eigenvectors and eigenvalues
+        //     const eigenDecomp = numeric.eig(matrix);
+        //     const eigenvalues = eigenDecomp.lambda.x;
+        //     const eigenvectors = eigenDecomp.E.x;
+        //
+        //     // Find the index of the maximum eigenvalue
+        //     const maxEigenIndex = eigenvalues.reduce((maxIndex, val, idx, arr) => (val > arr[maxIndex] ? idx : maxIndex), 0);
+        //
+        //     // Return the dominant eigenvector
+        //     return eigenvectors.map(row => row[maxEigenIndex]);
+        // }
+        
+        // Function to plot the guessed and actual eigenvectors for comparison
+        function plotEigenvectorComparison(guessedVector = null) {
+            // Use Power Method to estimate the dominant eigenpair of the generated matrix
+            // const { eigenvalue: powerEigenvalue, eigenvector: powerEigenvector } = powerMethod(generatedMatrix);
+        
+            // Use numeric.js to compute the actual dominant eigenvector
+            // const actualDominantEigenvector = getDominantEigenvector(generatedMatrix);
+            const actualDominantEigenvector = normalizeVector(firstEigenvector);
+			// guessedVector_normalized = normalizeVector(guessedVector);
+			// actualDominantEigenvector_normalized = normalizeVector(actualDominantEigenvector);
+			// powerEigenvector_normalized = normalizeVector(powerEigenvector);
+			// firstEigenvector_normalized = normalizeVector(firstEigenvector);
+			
+			// Trace for the actual eigenvector (first eigenvector)
+            const actualEigenTrace = {
+                type: 'scatter3d',
+                mode: 'lines+markers',
+                x: [-actualDominantEigenvector[0], actualDominantEigenvector[0]],
+                y: [-actualDominantEigenvector[1], actualDominantEigenvector[1]],
+                z: [-actualDominantEigenvector[2], actualDominantEigenvector[2]],
+                line: { width: 6, dash: 'dash', color: 'green', opacity: 0.8 },
+                marker: { size: 1, color: 'green', opacity: 0.8 },
+                name: 'Actual Dominant Eigenvector'
+            };
+        
+            // Trace for the guessed eigenvector from the camera position
+            const guessedEigenTrace = guessedVector ? {
+                type: 'scatter3d',
+                mode: 'lines+markers',
+                x: [0, guessedVector[0]],
+                y: [0, guessedVector[1]],
+                z: [0, guessedVector[2]],
+                line: { width: 6, dash: 'dash', color: 'magenta', opacity: 0.8 },
+                marker: { size: 1, color: 'magenta', opacity: 0.8 },
+                name: 'Guessed Eigenvector'
+            } : null;
+        
+            // Trace for the Power Method estimated eigenvector
+            // const powerMethodTrace = {
+            //     type: 'scatter3d',
+            //     mode: 'lines+markers',
+            //     x: [-powerEigenvector[0], powerEigenvector[0]],
+            //     y: [-powerEigenvector[1], powerEigenvector[1]],
+            //     z: [-powerEigenvector[2], powerEigenvector[2]],
+            //     line: { width: 6, dash: 'dot', color: 'orange', opacity: 0.8 },
+            //     marker: { size: 1, color: 'orange', opacity: 0.8 },
+            //     name: 'Power Method Eigenvector'
+            // };
+        
+            // Trace for the generated matrix vectors
+
+            const matrixTraces = generatedMatrix_t.map((col, index) => ({
+                type: 'scatter3d',
+                mode: 'lines+markers',
+                x: [0, col[0]],
+                y: [0, col[1]],
+                z: [0, col[2]],
+                line: { width: 6, color: ['cyan', '#00FFFF', '#00CED1'][index % 3], opacity: 0.8 },
+                marker: { size: 4, color: ['cyan', '#00FFFF', '#00CED1'][index % 3], opacity: 0.8 },
+                name: `Matrix Vector ${index + 1}`
+            }));
+        
+            // Combine all traces
+            // const allTraces = [actualEigenTrace, powerMethodTrace, ...matrixTraces];
+            const allTraces = [actualEigenTrace, ...matrixTraces];
+            if (guessedEigenTrace) allTraces.push(guessedEigenTrace);
+        
+            // Layout settings for the plot
+            const layout = {
+                scene: {
+                    xaxis: { range: [-buffer, buffer], title: 'X' },
+                    yaxis: { range: [-buffer, buffer], title: 'Y' },
+                    zaxis: { range: [-buffer, buffer], title: 'Z' },
+                    aspectmode: 'cube'
+                },
+                paper_bgcolor: 'black',
+                plot_bgcolor: 'black',
+                title: "Eigenvector Comparison",
+                font: {
+                    color: 'white'
+                }
+            };
+        
+            // Plot all traces together
+            Plotly.newPlot('plotly-div', allTraces, layout);
+        }
+
+        document.getElementById('close-tutorial').addEventListener('click', () => {
+            document.getElementById('tutorial-video').style.display = 'none';
+        });
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('generate-matrix').addEventListener('click', generateRandomMatrix);
+            document.getElementById('submit-guess').addEventListener('click', handleFirstEigenGuessSubmission);
+            document.getElementById('tutorial-button').addEventListener('click', () => {
+                const tutorialVideo = document.getElementById('tutorial-video');
+                if (tutorialVideo.style.display === 'none') {
+                    tutorialVideo.style.display = 'block';
+                } else {
+                    tutorialVideo.style.display = 'none';
+                }
+            });
+        });
+    </script>
+</body>
+</html>
